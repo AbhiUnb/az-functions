@@ -21,7 +21,6 @@ locals {
       name                       = "MF-MDI-CC-GHPROD-DDDS-AFUNCie"
       kind                       = "functionapp"
       storage_account_name       = "mfmdiccprodfunctionsa"
-     // storage_account_access_key = ""
 
     }
   }
