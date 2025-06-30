@@ -35,7 +35,7 @@ resource "azurerm_service_plan" "MFDMCCASPAFUNC" {
 
 #   # Uses an existing storage account
 #   storage_account_name       = each.value.storage_account_name
-#   storage_account_access_key = each.value.storage_account_access_key
+#   
 #   # storage_uses_managed_identity = true
 #   site_config = {
 #     always_on = false
@@ -70,4 +70,3 @@ resource "azurerm_linux_function_app" "my_function" {
 
   tags = local.tag_list_1
 }
-
