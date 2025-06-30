@@ -1,0 +1,43 @@
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Local Azure Functions settings
+local.settings.json
+
+# VSCode settings
+.vscode/
+
+# Terraform files
+*.tfstate
+*.tfstate.*
+.terraform/
+crash.log
+*.tfvars.backup
+terraform.tfvars
+
+# Go build and test files
+*.test
+*.exe
+*.out
+coverage.out
+
+# MacOS files
+.DS_Store
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.*
+
+# Ignore function zip packages if any
+*.zip
+
+# Ignore IDE specific folders
+.idea/
+*.iml
