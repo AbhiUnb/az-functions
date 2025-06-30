@@ -35,7 +35,7 @@ resource "azurerm_service_plan" "MFDMCCASPAFUNC" {
 
 #   # Uses an existing storage account
 #   storage_account_name       = each.value.storage_account_name
-#   
+#   storage_account_access_key = each.value.storage_account_access_key
 #   # storage_uses_managed_identity = true
 #   site_config = {
 #     always_on = false
@@ -53,7 +53,8 @@ resource "azurerm_linux_function_app" "my_function" {
   service_plan_id     = azurerm_service_plan.MFDMCCASPAFUNC.id
 
   storage_account_name       = "mfmdiccprodfunctionsa"
-  //storage_account= "fkeskfskdklskd"
+  storage_account_access_key = "xZLtjw2G2FngjwNTihWIASyGpNz/NdzkNtWshF7jpzhFxwwO7kxNX2Gg5vRjgIv9pebBx+6N3Xi4+AStUtKW7A=="
+
   site_config {
     always_on = false
 
@@ -70,3 +71,4 @@ resource "azurerm_linux_function_app" "my_function" {
 
   tags = local.tag_list_1
 }
+
