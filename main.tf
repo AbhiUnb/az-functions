@@ -53,8 +53,7 @@ resource "azurerm_linux_function_app" "my_function" {
   service_plan_id     = azurerm_service_plan.MFDMCCASPAFUNC.id
 
   storage_account_name       = "mfmdiccprodfunctionsa"
-  storage_account_access_key = "xZLtjw2G2FngjwNTihWIASyGpNz/NdzkNtWshF7jpzhFxwwO7kxNX2Gg5vRjgIv9pebBx+6N3Xi4+AStUtKW7A=="
-
+  //storage_account= "fkeskfskdklskd"
   site_config {
     always_on = false
 
