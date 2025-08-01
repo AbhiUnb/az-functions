@@ -1,142 +1,144 @@
-using namespace System.Net
-
-param($Request, $TriggerMetadata)
-
-# --- Auth with UAMI ---
-$uamiClientId = "YOUR-UAMI-CLIENT-ID"
+# ---AUthentication using UAMI-----
+$uamiClientId = "67dd78c6-sjhjdssds"
 
 try {
     Connect-AzAccount -Identity -AccountId $uamiClientId | Out-Null
-    Write-Output "Logged in with UAMI"
+    Write-Output "Logged in with User Assigned Managed Identity (ClientId: ${uamiClientId})"
 } catch {
-    return @{
-        statusCode = [HttpStatusCode]::Unauthorized
-        body = "Failed to login using UAMI: $_"
-    }
+    Write-Error "Failed to login with User Assigned Managed Identity: $_"
+    return
 }
 
-# --- DB Connection ---
-$connectionString = $env:SQL_CONNECTION_STRING
-$query = "SELECT mg_id FROM Management_Groups WHERE env_type = 'lower';"
-$mgIds = @()
+# --- FETCH MANAGEMENT GROUP IDS FROM AZURE SQL DATABASE ---
+$connectionString = ${env:SQL_CONNECTION_STRING}
+$query = 'SELECT mg_id FROM Management_Groups WHERE env_type = ''lower'';'
 
 try {
     Add-Type -AssemblyName "System.Data"
-    $connection = New-Object System.Data.SqlClient.SqlConnection $connectionString
+
+    $connection = New-Object System.Data.SqlClient.SqlConnection
+    $connection.ConnectionString = $connectionString
     $connection.Open()
+
     $command = $connection.CreateCommand()
     $command.CommandText = $query
+
     $reader = $command.ExecuteReader()
+    $managementGroupIds = @()
     while ($reader.Read()) {
-        $mgIds += $reader["mg_id"]
+        $managementGroupIds += $reader["mg_id"]
     }
+
     $reader.Close()
     $connection.Close()
+
+    Write-Output "Fetched Management Group IDs from DB: $($managementGroupIds -join ', ')"
 } catch {
-    return @{
-        statusCode = [HttpStatusCode]::InternalServerError
-        body = "Failed to fetch management groups: $_"
-    }
+    Write-Error "Failed to fetch Management Group IDs from DB: $_"
+    return
 }
 
-# --- Fetch Subscriptions ---
-$subs = @()
-foreach ($mgId in $mgIds) {
+# --- GET ALL SUBSCRIPTIONS UNDER NON-PROD MGs ---
+$allSubscriptions = @()
+
+foreach ($mgId in $managementGroupIds) {
     try {
-        $subs += Get-AzManagementGroupSubscription -GroupName $mgId
+        Write-Output "Getting subscriptions under Management Group: ${mgId}"
+        $subs = Get-AzManagementGroupSubscription -GroupName $mgId
+        if ($subs) {
+            $allSubscriptions += $subs
+            Write-Output "Found $($subs.Count) subscriptions under MG ${mgId}"
+        } else {
+            Write-Output "No subscriptions found under MG ${mgId}"
+        }
     } catch {
-        Write-Warning "Failed to get subs for $mgId: $_"
+        Write-Error "Failed to get subscriptions for MG ${mgId}: $_"
     }
 }
 
-# --- De-duplicate subscriptions ---
+# Remove duplicates based on Subscription ID
 $uniqueSubs = @{}
-$filteredSubs = @()
-foreach ($sub in $subs) {
+$filteredSubscriptions = @()
+
+foreach ($sub in $allSubscriptions) {
     if ($sub.Id -match "/subscriptions/([0-9a-fA-F-]+)$") {
         $subId = $matches[1]
+
         if (-not $uniqueSubs.ContainsKey($subId)) {
             $uniqueSubs[$subId] = $true
-            $filteredSubs += $sub
+            $filteredSubscriptions += $sub
         }
+    } else {
+        Write-Warning "Cannot extract subscription ID from $($sub.Id)"
     }
 }
 
-# --- Analyze VMs ---
-$finalOutput = @()
+$allSubscriptions = $filteredSubscriptions
+Write-Output "Total unique subscriptions to process: $($allSubscriptions.Count)"
 
-foreach ($sub in $filteredSubs) {
-    if ($sub.Id -match "/subscriptions/([0-9a-fA-F-]+)$") {
+# --- FOR EACH SUBSCRIPTION, FIND VMs AND APPLY PARKING LOGIC ---
+foreach ($sub in $allSubscriptions) {
+    $fullSubId = $sub.Id
+    $subName = $sub.Name
+
+    if ($fullSubId -match "/subscriptions/([0-9a-fA-F-]+)$") {
         $subId = $matches[1]
-        Set-AzContext -SubscriptionId $subId | Out-Null
+    } else {
+        Write-Error "Cannot extract subscription ID from $fullSubId"
+        continue
+    }
 
+    try {
+        $subDetails = Get-AzSubscription -SubscriptionId $subId
+        $tenantId = $subDetails.TenantId
+        Set-AzContext -SubscriptionId $subId -TenantId $tenantId | Out-Null
+        Write-Output "Context set for Subscription: ${subName}"
+    } catch {
+        Write-Error "Failed to set context for ${subName}: $_"
+        continue
+    }
+
+    try {
         $vms = Get-AzVM
         foreach ($vm in $vms) {
             $vmId = $vm.Id
             $vmName = $vm.Name
-            $rg = $vm.ResourceGroupName
+            Write-Output "Analyzing VM: $vmName in Subscription: $subId"
 
-            $metrics = Get-AzMetric -ResourceId $vmId `
-                -TimeGrain ([TimeSpan]::FromMinutes(15)) `
-                -StartTime (Get-Date).AddDays(-3) `
-                -EndTime (Get-Date) `
-                -MetricName "Percentage CPU" `
-                -Aggregation Average
+            $end = Get-Date
+            $start = $end.AddDays(-7)
 
-            # Group by day
-            $cpuByDay = $metrics.Data | Group-Object { $_.TimeStamp.Date }
-            foreach ($group in $cpuByDay) {
-                $cpuValues = $group.Group | Where-Object { $_.Average -ne $null } | Select-Object -ExpandProperty Average
-                if (-not $cpuValues) { continue }
+            $metrics = Get-AzMetric -ResourceId $vmId -TimeGrain 00:15:00 -StartTime $start -EndTime $end -MetricName "Percentage CPU", "OS Disk Read Bytes/Sec", "OS Disk Write Bytes/Sec"
 
-                $avg = ($cpuValues | Measure-Object -Average).Average
-                $std = ($cpuValues | Measure-Object -StandardDeviation).StandardDeviation
-                $threshold = 10
+            $cpuPoints = $metrics | Where-Object { $_.MetricName.Value -eq "Percentage CPU" } | ForEach-Object { $_.Data }
+            $cpuAverages = $cpuPoints | Where-Object { $_.Average -ne $null } | Select-Object -ExpandProperty Average
+            $cpuTimestamps = $cpuPoints | Where-Object { $_.Average -ne $null } | Select-Object -ExpandProperty TimeStamp
 
-                # Find idle slots
-                $timestamps = $group.Group | Sort-Object TimeStamp
-                $idleStreak = @()
-                $longestIdle = @()
-                $spikeFound = $false
-
-                foreach ($entry in $timestamps) {
-                    if ($entry.Average -lt $threshold) {
-                        $idleStreak += $entry
-                        if ($idleStreak.Count -ge 12) {
-                            $longestIdle = $idleStreak
-                        }
-                    } else {
-                        $spikeFound = $true
-                        $idleStreak = @()
-                    }
+            $windowSize = 12  # 3 hours of 15-min data
+            $foundIdle = $false
+            for ($i = 0; $i -le ($cpuAverages.Count - $windowSize); $i++) {
+                $window = $cpuAverages[$i..($i + $windowSize - 1)]
+                if ($window -and ($window | Where-Object { $_ -gt 10 }) -eq $null) {
+                    $stopTime = $cpuTimestamps[$i]
+                    Write-Output "  ↳ Stop time suggestion for $vmName: $stopTime"
+                    $foundIdle = $true
+                    break
                 }
+            }
 
-                $stopTime = $startTime = $null
-                if ($longestIdle) {
-                    $stopTime = $longestIdle[0].TimeStamp.ToString("HH:mm")
-                    $nextUsage = $timestamps | Where-Object { $_.TimeStamp -gt $longestIdle[-1].TimeStamp -and $_.Average -ge $threshold }
-                    if ($nextUsage) {
-                        $startTime = ($nextUsage[0].TimeStamp).AddMinutes(-60).ToString("HH:mm")
-                    }
-                }
+            if (-not $foundIdle) {
+                Write-Output "  ↳ No 3-hour idle window found for $vmName"
+            }
 
-                $finalOutput += [PSCustomObject]@{
-                    Subscription = $subId
-                    ResourceGroup = $rg
-                    VMName = $vmName
-                    Date = $group.Name.ToString("yyyy-MM-dd")
-                    StopTime = $stopTime
-                    StartTime = $startTime
-                    Status = if ($stopTime) { "Idle detected" } else { "No idle window" }
+            for ($j = $cpuAverages.Count - 1; $j -ge 1; $j--) {
+                if ($cpuAverages[$j] -gt 20) {
+                    $startTime = $cpuTimestamps[[Math]::Max(0, $j - 4)]  # 1 hour = 4 intervals before
+                    Write-Output "  ↳ Start time suggestion for $vmName: $startTime"
+                    break
                 }
             }
         }
+    } catch {
+        Write-Error "Error processing VMs in $subId: $_"
     }
-}
-
-# --- Return JSON response ---
-return @{
-    statusCode = [HttpStatusCode]::OK
-    body = ($finalOutput | ConvertTo-Json -Depth 4)
-    headers = @{ "Content-Type" = "application/json" }
 }
