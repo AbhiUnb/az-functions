@@ -1,155 +1,142 @@
-cc_location = "canadacentral"
+using namespace System.Net
 
-cc_core_resource_group_name = "rg-mccain-core-prod"
+param($Request, $TriggerMetadata)
 
-MF_DM_CC_CORE_appSP_Name = "MFDMCCPRODASPAFUNCie"
+# --- Auth with UAMI ---
+$uamiClientId = "YOUR-UAMI-CLIENT-ID"
 
-MF_DM_CC_CORE_Webapp_Name = "MFDMCCPRODFUNCTIONAPP"
-
-cc_core_function_apps = {
-  myfunctionapp = {
-    name                        = "MFDMCCPRODFUNCTIONAPP"
-    location                    = "canadacentral"
-    os_type                     = "Linux"
-    storage_account_name        = "mfmdiccprodsa"
-    storage_account_access_key  = "your-storage-account-access-key"
-    storage_account_rg          = "rg-mccain-core-prod"
-    network_name                = "mccain-vnet-prod"
-    subnet_name                 = "function-subnet"
-    user_assigned_identity_name = "mccain-func-identity"
-    user_assigned_identity_rg   = "rg-mccain-core-prod"
-    app_insights_name           = "mccain-func-appinsights"
-    app_insights_rg             = "rg-mccain-core-prod"
-    key_vault_name              = "mccain-keyvault-prod"
-
-    additional_app_settings = {
-      FUNCTIONS_WORKER_RUNTIME = "node"
-      WEBSITE_RUN_FROM_PACKAGE = "https://storageaccount.blob.core.windows.net/container/package.zip?<sas_token>"
-      # Example Key Vault reference syntax
-      mySecretSetting = "@Microsoft.KeyVault(SecretUri=https://mccain-keyvault-prod.vault.azure.net/secrets/mySecret/)"
+try {
+    Connect-AzAccount -Identity -AccountId $uamiClientId | Out-Null
+    Write-Output "Logged in with UAMI"
+} catch {
+    return @{
+        statusCode = [HttpStatusCode]::Unauthorized
+        body = "Failed to login using UAMI: $_"
     }
-  }
 }
 
+# --- DB Connection ---
+$connectionString = $env:SQL_CONNECTION_STRING
+$query = "SELECT mg_id FROM Management_Groups WHERE env_type = 'lower';"
+$mgIds = @()
 
-tfvars------
-
-# # resource "azurerm_app_service_plan" "MFDMCCASPAFUNC" {
-# #   name                = "MFDMCCPRODASPAFUNC"
-# #   resource_group_name = var.cc_core_resource_group_name
-# #   location            = var.cc_location
-# #   kind                = "FunctionApp"
-# #   sku {
-# #     tier = "PremiumV2"
-# #     size = "P1v2"
-# #   }
-# # }
-
-
-resource "azurerm_service_plan" "MFDMCCASPAFUNC" {
-  resource_group_name = var.cc_core_resource_group_name
-  location            = var.cc_location
-  name                = "MFDMCCPRODASPAFUNC"
-  os_type             = "Linux"
-  sku_name            = "Y1"
-  tags                = local.tag_list_1
-}
-
-# module "avm-res-web-site" {
-#   source              = "Azure/avm-res-web-site/azurerm"
-#   version             = "0.16.4"
-#   for_each            = local.functionapp
-#   name                = each.value.name
-#   resource_group_name = var.cc_core_resource_group_name
-#   location            = var.cc_location
-
-#   kind = each.value.kind
-
-#   # Uses an existing app service plan
-#   os_type                  = azurerm_service_plan.MFDMCCASPAFUNC.os_type
-#   service_plan_resource_id = azurerm_service_plan.MFDMCCASPAFUNC.id
-
-#   # Uses an existing storage account
-#   storage_account_name       = each.value.storage_account_name
-#   storage_account_access_key = each.value.storage_account_access_key
-#   # storage_uses_managed_identity = true
-#   site_config = {
-#     always_on = false
-#   }
-
-#   tags = local.tag_list_1
-
-
-# }
-
-resource "azurerm_linux_function_app" "my_function" {
-  name                = "my-node-function-app1"
-  resource_group_name = var.cc_core_resource_group_name
-  location            = var.cc_location
-  service_plan_id     = azurerm_service_plan.MFDMCCASPAFUNC.id
-
-  storage_account_name       = "mfmdiccprodfunctionsa"
-  storage_account_access_key = "xZLtjw2G2FngjwNTihWIASyGpNz/NdzkNtWshF7jpzhFxwwO7kxNX2Gg5vRjgIv9pebBx+6N3Xi4+AStUtKW7A=="
-
-  site_config {
-    always_on = false
-
-    application_stack {
-      node_version = "18"
+try {
+    Add-Type -AssemblyName "System.Data"
+    $connection = New-Object System.Data.SqlClient.SqlConnection $connectionString
+    $connection.Open()
+    $command = $connection.CreateCommand()
+    $command.CommandText = $query
+    $reader = $command.ExecuteReader()
+    while ($reader.Read()) {
+        $mgIds += $reader["mg_id"]
     }
-
-    //function_app_timeout = "PT5M"
-  }
-
-  identity {
-    type = "SystemAssigned"
-  }
-
-  tags = local.tag_list_1
-}
-
-main.tf
-
-
-
-
-
-locla.tf
-
-
-locals {
-  tag_list_1 = {
-    "Application Name" = "McCain DevSecOps"
-    "GL Code"          = "N/A"
-    "Environment"      = "sandbox"
-    "IT Owner"         = "mccain-azurecontributor@mccain.ca"
-    "Onboard Date"     = "12/19/2024"
-    "Modified Date"    = "N/A"
-    "Organization"     = "McCain Foods Limited"
-    "Business Owner"   = "trilok.tater@mccain.ca"
-    "Implemented by"   = "trilok.tater@mccain.ca"
-    "Resource Owner"   = "trilok.tater@mccain.ca"
-    "Resource Posture" = "Private"
-    "Resource Type"    = "Terraform POC"
-    "Built Using"      = "Terraform"
-  }
-
-
-  functionapp = {
-    MF-MDI-CC-GHPROD-DDDS-AFUNC = {
-      name                       = "MF-MDI-CC-GHPROD-DDDS-AFUNCie"
-      kind                       = "functionapp"
-      storage_account_name       = "mfmdiccprodfunctionsa"
-      storage_account_access_key = "xZLtjw2G2FngjwNTihWIASyGpNz/NdzkNtWshF7jpzhFxwwO7kxNX2Gg5vRjgIv9pebBx+6N3Xi4+AStUtKW7A=="
-
+    $reader.Close()
+    $connection.Close()
+} catch {
+    return @{
+        statusCode = [HttpStatusCode]::InternalServerError
+        body = "Failed to fetch management groups: $_"
     }
-  }
-
-
-
-
-
 }
 
+# --- Fetch Subscriptions ---
+$subs = @()
+foreach ($mgId in $mgIds) {
+    try {
+        $subs += Get-AzManagementGroupSubscription -GroupName $mgId
+    } catch {
+        Write-Warning "Failed to get subs for $mgId: $_"
+    }
+}
 
+# --- De-duplicate subscriptions ---
+$uniqueSubs = @{}
+$filteredSubs = @()
+foreach ($sub in $subs) {
+    if ($sub.Id -match "/subscriptions/([0-9a-fA-F-]+)$") {
+        $subId = $matches[1]
+        if (-not $uniqueSubs.ContainsKey($subId)) {
+            $uniqueSubs[$subId] = $true
+            $filteredSubs += $sub
+        }
+    }
+}
 
+# --- Analyze VMs ---
+$finalOutput = @()
+
+foreach ($sub in $filteredSubs) {
+    if ($sub.Id -match "/subscriptions/([0-9a-fA-F-]+)$") {
+        $subId = $matches[1]
+        Set-AzContext -SubscriptionId $subId | Out-Null
+
+        $vms = Get-AzVM
+        foreach ($vm in $vms) {
+            $vmId = $vm.Id
+            $vmName = $vm.Name
+            $rg = $vm.ResourceGroupName
+
+            $metrics = Get-AzMetric -ResourceId $vmId `
+                -TimeGrain ([TimeSpan]::FromMinutes(15)) `
+                -StartTime (Get-Date).AddDays(-3) `
+                -EndTime (Get-Date) `
+                -MetricName "Percentage CPU" `
+                -Aggregation Average
+
+            # Group by day
+            $cpuByDay = $metrics.Data | Group-Object { $_.TimeStamp.Date }
+            foreach ($group in $cpuByDay) {
+                $cpuValues = $group.Group | Where-Object { $_.Average -ne $null } | Select-Object -ExpandProperty Average
+                if (-not $cpuValues) { continue }
+
+                $avg = ($cpuValues | Measure-Object -Average).Average
+                $std = ($cpuValues | Measure-Object -StandardDeviation).StandardDeviation
+                $threshold = 10
+
+                # Find idle slots
+                $timestamps = $group.Group | Sort-Object TimeStamp
+                $idleStreak = @()
+                $longestIdle = @()
+                $spikeFound = $false
+
+                foreach ($entry in $timestamps) {
+                    if ($entry.Average -lt $threshold) {
+                        $idleStreak += $entry
+                        if ($idleStreak.Count -ge 12) {
+                            $longestIdle = $idleStreak
+                        }
+                    } else {
+                        $spikeFound = $true
+                        $idleStreak = @()
+                    }
+                }
+
+                $stopTime = $startTime = $null
+                if ($longestIdle) {
+                    $stopTime = $longestIdle[0].TimeStamp.ToString("HH:mm")
+                    $nextUsage = $timestamps | Where-Object { $_.TimeStamp -gt $longestIdle[-1].TimeStamp -and $_.Average -ge $threshold }
+                    if ($nextUsage) {
+                        $startTime = ($nextUsage[0].TimeStamp).AddMinutes(-60).ToString("HH:mm")
+                    }
+                }
+
+                $finalOutput += [PSCustomObject]@{
+                    Subscription = $subId
+                    ResourceGroup = $rg
+                    VMName = $vmName
+                    Date = $group.Name.ToString("yyyy-MM-dd")
+                    StopTime = $stopTime
+                    StartTime = $startTime
+                    Status = if ($stopTime) { "Idle detected" } else { "No idle window" }
+                }
+            }
+        }
+    }
+}
+
+# --- Return JSON response ---
+return @{
+    statusCode = [HttpStatusCode]::OK
+    body = ($finalOutput | ConvertTo-Json -Depth 4)
+    headers = @{ "Content-Type" = "application/json" }
+}
